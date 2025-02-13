@@ -1,22 +1,15 @@
 package main
 
 import (
-	"database/sql"  //Interacts with the SQL database.
-	"encoding/json" //Provides functionality to encode and decode JSON data.
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 
-	//_ "github.com/joho/godotenv" //Loads environment variables from a .env file.
-	_ "github.com/lib/pq" //A PostgreSQL driver for Go, enabling communication with PostgreSQL databases.
-)
-
-const (
-	host     = "localhost"
-	port     = 5432
-	user     = "myuser"
-	password = "mysecretpassword"
-	dbname   = "mydatabase"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 var DB *sql.DB
@@ -27,11 +20,12 @@ type User struct {
 	Email string `json:"email"`
 }
 
-func getUsers(w http.ResponseWriter, r *http.Request) {
+func getUsers(w http.ResponseWriter, r *http.Request) []User {
 	rows, err := DB.Query("SELECT id, name, email FROM users")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+
+		return nil
 	}
 	defer rows.Close()
 
@@ -46,70 +40,72 @@ func getUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(users)
+
+	return users
 }
 
+// Нужно декомпозировать функцию что бы она выполняла только одну функцию создание ДБ, а создание таблицы и добавление данных в нее уже в отдельные методы
 func initDB() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatalf("Error loading .env file")
+	}
 
-	psqlInfo := fmt.Sprintf("host=%s port=%d user=%s "+
-		"password=%s dbname=%s sslmode=disable",
+	host := os.Getenv("DB_HOST")
+	port := os.Getenv("DB_PORT")
+	user := os.Getenv("DB_USER")
+	password := os.Getenv("DB_PASSWORD")
+	dbname := os.Getenv("DB_NAME")
+
+	psqlInfo := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
 		host, port, user, password, dbname)
 	db, err := sql.Open("postgres", psqlInfo)
 	if err != nil {
 		panic(err)
 	}
-	defer db.Close()
 
 	err = db.Ping()
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println("Successfully connected!")
+	createTableQuery := `
+    CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100),
+        email VARCHAR(100) UNIQUE NOT NULL
+    );`
+	_, err = db.Exec(createTableQuery)
+	if err != nil {
+		panic(err)
+	}
 
+	insertUserQuery := `
+    INSERT INTO users (name, email) VALUES
+    ('John Doe', 'john.doe@example.com'),
+    ('Jane Smith', 'jane.smith@example.com'),
+    ('Alice Johnson', 'alice.johnson@example.com')
+    ON CONFLICT (email) DO NOTHING;`
+	_, err = db.Exec(insertUserQuery)
+	if err != nil {
+		panic(err)
+	}
+
+	DB = db
+	fmt.Println("Successfully connected, ensured users table exists, and added initial users!")
 }
 
 func loadhomepage(w http.ResponseWriter, r *http.Request) {
-	// Query the database to get users
-	rows, err := DB.Query("SELECT id, name, email FROM users")
-	if err != nil {
-		http.Error(w, "Error fetching users: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-
-	var users []User
-	for rows.Next() {
-		var user User
-		if err := rows.Scan(&user.ID, &user.Name, &user.Email); err != nil {
-			http.Error(w, "Error scanning user: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		users = append(users, user)
-	}
-
-	// HTML template to render the users
-	html := "<html><head><title>Users List</title></head><body>"
-	html += "<h1>Users List</h1>"
-	html += "<table border='1'><tr><th>ID</th><th>Name</th><th>Email</th></tr>"
-
-	// Loop through users and display them in a table
-	for _, user := range users {
-		html += fmt.Sprintf("<tr><td>%d</td><td>%s</td><td>%s</td></tr>", user.ID, user.Name, user.Email)
-	}
-
-	html += "</table></body></html>"
-
-	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(html))
+	users := getUsers(w, r)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(users)
 }
 
 func main() {
 	initDB()
-	// Set up routes and start your server here...
-	http.HandleFunc("/users", getUsers)
+	http.HandleFunc("/users", loadhomepage) // Link to the homepage
 	http.HandleFunc("/", loadhomepage)
 
-	//start server
 	fmt.Println("starting server on port 8080...")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
